@@ -242,3 +242,65 @@ class DataCollector:
             "trades_buffered": len(self.trades_buffer),
             "timestamp": int(time.time() * 1000),
         }
+
+    async def save_prediction(self, prediction: dict):
+        """Save prediction to Supabase for accuracy tracking"""
+        try:
+            payload = {
+                "price_at_prediction": prediction.get("price"),
+                "direction": prediction.get("direction"),
+                "confidence": prediction.get("confidence"),
+                "score": prediction.get("score", 0),
+                "method": prediction.get("method"),
+            }
+            async with httpx.AsyncClient(verify=False, timeout=10) as client:
+                await client.post(
+                    f"{SB_URL}/rest/v1/btc_predictions",
+                    headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                    json=payload,
+                )
+        except Exception as e:
+            logger.debug(f"Save prediction failed: {e}")
+
+    async def evaluate_old_predictions(self, current_price: float):
+        """Evaluate predictions from 10 minutes ago and update their results"""
+        try:
+            from datetime import timedelta
+            ten_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
+            ten_min_ago_end = (datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat()
+
+            async with httpx.AsyncClient(verify=False, timeout=10) as client:
+                # Get predictions from ~10 minutes ago that haven't been evaluated
+                resp = await client.get(
+                    f"{SB_URL}/rest/v1/btc_predictions",
+                    params={
+                        "select": "id,price_at_prediction,direction",
+                        "time": f"gte.{ten_min_ago}",
+                        "time": f"lte.{ten_min_ago_end}",
+                        "actual_price_after": "is.null",
+                        "limit": "50",
+                    },
+                    headers=SB_HEADERS,
+                )
+                rows = resp.json()
+
+                if not isinstance(rows, list) or not rows:
+                    return
+
+                for row in rows:
+                    was_correct = False
+                    if row["direction"] == "up":
+                        was_correct = current_price > row["price_at_prediction"]
+                    elif row["direction"] == "down":
+                        was_correct = current_price < row["price_at_prediction"]
+
+                    await client.patch(
+                        f"{SB_URL}/rest/v1/btc_predictions?id=eq.{row['id']}",
+                        headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                        json={
+                            "actual_price_after": current_price,
+                            "was_correct": was_correct,
+                        },
+                    )
+        except Exception as e:
+            logger.debug(f"Evaluate predictions failed: {e}")

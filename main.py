@@ -30,7 +30,7 @@ latest_prediction = {}
 
 # ─── Background Tasks ───────────────────────────────────────
 async def prediction_loop():
-    """توقع جديد كل 10 ثوانٍ"""
+    """New prediction every 10 seconds, saved to Supabase"""
     global latest_prediction
     while True:
         try:
@@ -39,14 +39,13 @@ async def prediction_loop():
                 prediction = engine.predict(collector.current_price, features)
                 latest_prediction = prediction
 
-                # تقييم التوقعات السابقة
-                engine.evaluate_predictions(collector.current_price)
+                # Save prediction to Supabase
+                asyncio.create_task(collector.save_prediction(prediction))
 
-                logger.debug(
-                    f"Prediction: {prediction['direction']} "
-                    f"(confidence={prediction['confidence']:.0%}, "
-                    f"method={prediction['method']})"
-                )
+                # Evaluate predictions from 10 minutes ago
+                asyncio.create_task(collector.evaluate_old_predictions(collector.current_price))
+
+                engine.evaluate_predictions(collector.current_price)
         except Exception as e:
             logger.error(f"Prediction error: {e}")
 
