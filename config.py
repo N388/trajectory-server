@@ -14,10 +14,10 @@ SB_HEADERS = {
 
 # ─── Binance WebSocket Streams ───────────────────────────────
 WS_BASE = "wss://stream.binance.com:9443/ws"
-WS_COMBINED = "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/btcusdt@depth20@1000ms/btcusdt@kline_1m/btcusdt@aggTrade"
+WS_COMBINED = "wss://data-stream.binance.vision/stream?streams=btcusdt@ticker/btcusdt@depth20@1000ms/btcusdt@kline_1m/btcusdt@aggTrade"
 
 # ─── Binance REST ────────────────────────────────────────────
-REST_KLINES = "https://api.binance.com/api/v3/klines"
+REST_KLINES = "https://data-api.binance.vision/api/v3/klines"
 
 # ─── Prediction Settings ─────────────────────────────────────
 PREDICTION_HORIZON_MIN = 10       # توقع 10 دقائق للأمام
