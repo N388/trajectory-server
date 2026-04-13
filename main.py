@@ -1,0 +1,192 @@
+"""
+BTC Trajectory — API Server
+FastAPI server يجمع البيانات ويحسب المؤشرات ويرسل التوقعات
+"""
+import asyncio
+import logging
+import time
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+
+from config import HOST, PORT, CORS_ORIGINS, PREDICTION_INTERVAL_SEC
+from data_collector import DataCollector
+from predictor import PredictionEngine
+
+# ─── Logging ─────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger("server")
+
+# ─── Global State ────────────────────────────────────────────
+collector = DataCollector()
+engine = PredictionEngine()
+latest_prediction = {}
+
+
+# ─── Background Tasks ───────────────────────────────────────
+async def prediction_loop():
+    """توقع جديد كل 10 ثوانٍ"""
+    global latest_prediction
+    while True:
+        try:
+            if collector.current_price:
+                features = collector.indicators.get_feature_vector()
+                prediction = engine.predict(collector.current_price, features)
+                latest_prediction = prediction
+
+                # تقييم التوقعات السابقة
+                engine.evaluate_predictions(collector.current_price)
+
+                logger.debug(
+                    f"Prediction: {prediction['direction']} "
+                    f"(confidence={prediction['confidence']:.0%}, "
+                    f"method={prediction['method']})"
+                )
+        except Exception as e:
+            logger.error(f"Prediction error: {e}")
+
+        await asyncio.sleep(PREDICTION_INTERVAL_SEC)
+
+
+# ─── App Lifecycle ───────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """تشغيل المهام عند بدء وإيقاف السيرفر"""
+    logger.info("Starting BTC Trajectory Server...")
+    engine.initialize()
+
+    # تشغيل جمع البيانات و حلقة التوقع
+    collector_task = asyncio.create_task(collector.run())
+    prediction_task = asyncio.create_task(prediction_loop())
+
+    yield
+
+    logger.info("Shutting down...")
+    collector.stop()
+    collector_task.cancel()
+    prediction_task.cancel()
+
+
+# ─── FastAPI App ─────────────────────────────────────────────
+app = FastAPI(
+    title="BTC Trajectory API",
+    description="تحليل مباشر وتوقع لسعر البيتكوين",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ═══════════════════════════════════════════════════════════════
+# API Endpoints
+# ═══════════════════════════════════════════════════════════════
+
+@app.get("/")
+async def root():
+    return {
+        "service": "BTC Trajectory API",
+        "status": "running",
+        "price": collector.current_price,
+    }
+
+
+@app.get("/api/prediction")
+async def get_prediction():
+    """
+    التوقع الحالي — يستدعيه React كل 10 ثوانٍ
+    """
+    if not latest_prediction:
+        return {"error": "No prediction yet. Waiting for data..."}
+
+    return {
+        "direction": latest_prediction.get("direction"),
+        "confidence": latest_prediction.get("confidence"),
+        "score": latest_prediction.get("score"),
+        "method": latest_prediction.get("method"),
+        "trajectory": latest_prediction.get("trajectory", []),
+        "price": latest_prediction.get("price"),
+        "timestamp": latest_prediction.get("timestamp"),
+    }
+
+
+@app.get("/api/features")
+async def get_features():
+    """المؤشرات الحالية"""
+    return collector.indicators.get_feature_vector()
+
+
+@app.get("/api/accuracy")
+async def get_accuracy():
+    """دقة التوقعات"""
+    return engine.get_accuracy()
+
+
+@app.get("/api/feature-importance")
+async def get_feature_importance():
+    """أهمية المؤشرات"""
+    return engine.get_feature_importance()
+
+
+@app.get("/api/state")
+async def get_state():
+    """الحالة الكاملة — للتشخيص"""
+    state = collector.get_state()
+    state["prediction"] = {
+        "direction": latest_prediction.get("direction"),
+        "confidence": latest_prediction.get("confidence"),
+        "method": latest_prediction.get("method"),
+    }
+    state["accuracy"] = engine.get_accuracy()
+    return state
+
+
+@app.get("/api/signals")
+async def get_signals():
+    """إشارات المؤشرات الفردية — لعرضها في الواجهة"""
+    features = collector.indicators.get_feature_vector()
+    from predictor import rule_based_predict
+    result = rule_based_predict(features)
+    return {
+        "signals": result.get("signals", {}),
+        "composite_score": result.get("score", 0),
+    }
+
+
+@app.post("/api/train")
+async def trigger_training():
+    """
+    تشغيل تدريب النموذج يدوياً
+    ⚠️ يحتاج بيانات كافية في Supabase
+    """
+    from trainer import run_training
+    result = await run_training()
+    if "error" not in result:
+        engine.initialize()  # إعادة تحميل النموذج الجديد
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════
+# Run
+# ═══════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host=HOST,
+        port=PORT,
+        reload=False,
+        log_level="info",
+    )
