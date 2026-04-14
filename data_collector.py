@@ -244,7 +244,6 @@ class DataCollector:
         }
 
     async def save_prediction(self, prediction: dict):
-        """Save prediction to Supabase for accuracy tracking"""
         try:
             payload = {
                 "price_at_prediction": prediction.get("price"),
@@ -263,44 +262,23 @@ class DataCollector:
             logger.debug(f"Save prediction failed: {e}")
 
     async def evaluate_old_predictions(self, current_price: float):
-        """Evaluate predictions from 10 minutes ago and update their results"""
         try:
-            from datetime import timedelta
-            ten_min_ago = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
-            ten_min_ago_end = (datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat()
-
+            from datetime import datetime, timezone, timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
             async with httpx.AsyncClient(verify=False, timeout=10) as client:
-                # Get predictions from ~10 minutes ago that haven't been evaluated
                 resp = await client.get(
-                    f"{SB_URL}/rest/v1/btc_predictions",
-                    params={
-                        "select": "id,price_at_prediction,direction",
-                        "time": f"gte.{ten_min_ago}",
-                        "time": f"lte.{ten_min_ago_end}",
-                        "actual_price_after": "is.null",
-                        "limit": "50",
-                    },
+                    f"{SB_URL}/rest/v1/btc_predictions?actual_price_after=is.null&time=lte.{cutoff}&limit=50",
                     headers=SB_HEADERS,
                 )
                 rows = resp.json()
-
                 if not isinstance(rows, list) or not rows:
                     return
-
                 for row in rows:
-                    was_correct = False
-                    if row["direction"] == "up":
-                        was_correct = current_price > row["price_at_prediction"]
-                    elif row["direction"] == "down":
-                        was_correct = current_price < row["price_at_prediction"]
-
+                    was_correct = (row["direction"] == "up" and current_price > row["price_at_prediction"]) or (row["direction"] == "down" and current_price < row["price_at_prediction"])
                     await client.patch(
                         f"{SB_URL}/rest/v1/btc_predictions?id=eq.{row['id']}",
                         headers={**SB_HEADERS, "Prefer": "return=minimal"},
-                        json={
-                            "actual_price_after": current_price,
-                            "was_correct": was_correct,
-                        },
+                        json={"actual_price_after": current_price, "was_correct": was_correct},
                     )
         except Exception as e:
             logger.debug(f"Evaluate predictions failed: {e}")
