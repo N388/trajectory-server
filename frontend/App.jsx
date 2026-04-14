@@ -277,7 +277,13 @@ export default function App() {
       if (!price) return;
       livePrice.current = price;
       const now = Date.now();
-      priceHist.current.push({ time: now, price });
+      // Reject outlier spikes (>0.5% jump) and duplicate timestamps (<500ms)
+      const lastP = priceHist.current.at(-1);
+      const isSpike = lastP && Math.abs(price - lastP.price) / lastP.price > 0.005;
+      const isDupe = lastP && Math.abs(now - lastP.time) < 500;
+      if (!isSpike && !isDupe) {
+        priceHist.current.push({ time: now, price });
+      }
       priceHist.current = priceHist.current.filter(p => now - p.time < HIST_MIN * 60000);
       // Generate first trajectory immediately on first price
       if (curTrajs.current.length === 0) {

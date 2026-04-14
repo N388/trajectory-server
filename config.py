@@ -23,7 +23,7 @@ REST_KLINES = "https://data-api.binance.vision/api/v3/klines"
 PREDICTION_HORIZON_MIN = 10       # توقع 10 دقائق للأمام
 PREDICTION_INTERVAL_SEC = 10      # توقع جديد كل 10 ثوانٍ
 TRAJECTORY_POINTS = 120           # عدد نقاط المنحنى
-CONFIDENCE_THRESHOLD = 0.55       # الحد الأدنى لعرض التوقع
+CONFIDENCE_THRESHOLD = 0.08       # الحد الأدنى لعرض التوقع
 SAVE_INTERVAL_SEC = 10            # حفظ في Supabase كل 10 ثوانٍ
 
 # ─── Data Collection ─────────────────────────────────────────

@@ -114,10 +114,15 @@ class DataCollector:
             logger.debug(f"Message parse error: {e}")
 
     def _handle_ticker(self, data: dict):
-        """تحديث السعر من ticker"""
         price = float(data.get("c", 0))
         if price <= 0:
             return
+        # Outlier filter: reject price if it jumps more than 1% from last known price in one tick
+        if self.current_price is not None:
+            change_pct = abs(price - self.current_price) / self.current_price
+            if change_pct > 0.01:
+                logger.debug(f"Rejected outlier price: {price} (current: {self.current_price}, jump: {change_pct:.2%})")
+                return
         self.current_price = price
         self.change_24h = float(data.get("P", 0))
         self.indicators.update_price_tick(price, time.time() * 1000)

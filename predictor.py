@@ -172,16 +172,7 @@ class MLPredictor:
 # Trajectory Builder — بناء منحنى التوقع
 # ═══════════════════════════════════════════════════════════════
 
-def build_trajectory(
-    price: float,
-    prediction: dict,
-    features: dict,
-    start_time: float | None = None,
-) -> list:
-    """
-    بناء منحنى توقع واقعي بناءً على نتيجة التوقع
-    بدل smoothstep + sin عشوائي، نبني منحنى يعكس التوقع الفعلي
-    """
+def build_trajectory(price, prediction, features, start_time=None):
     if start_time is None:
         start_time = time.time() * 1000
 
@@ -191,35 +182,26 @@ def build_trajectory(
     confidence = prediction.get("confidence", 0.0)
     score = prediction.get("score", 0.0)
 
-    # مقدار التغير المتوقع — مبني على التقلب الحالي
+    # If truly neutral or extremely low confidence, flat line
+    if direction == "neutral" or confidence < CONFIDENCE_THRESHOLD:
+        return [{"time": start_time + (i/points) * horizon_ms, "price": round(price, 2)} for i in range(points + 1)]
+
+    # Calculate expected price change based on volatility and confidence
     atr_pct = features.get("atr_pct", 0.05)
     volatility = features.get("volatility_5m", 0.01)
+    max_change_pct = max(atr_pct * 1.5, volatility * 2, 0.03)
 
-    # الحد الأقصى للتغير المتوقع (واقعي)
-    max_change_pct = max(atr_pct * 2, volatility * 3, 0.05)
-
-    if direction == "neutral" or confidence < CONFIDENCE_THRESHOLD:
-        trajectory = []
-        for i in range(points + 1):
-            t = i / points
-            trajectory.append({
-                "time": start_time + t * horizon_ms,
-                "price": round(price, 2),
-            })
-        return trajectory
-
-    # اتجاه التوقع
+    # Direction and magnitude
     sign = 1.0 if direction == "up" else -1.0
     target_change = sign * confidence * max_change_pct / 100
 
     trajectory = []
     for i in range(points + 1):
         t = i / points
-        # Clear directional movement, stronger early, slower later
+        # Smooth ease-out curve - moves more at start, less at end
         progress = 1 - (1 - t) ** 2.5
-        # Very subtle noise that doesn't reverse direction
-        noise_amp = volatility * 0.0003 * (1 - t * 0.7)
-        noise = math.sin(t * math.pi * 7) * noise_amp * t
+        # Very subtle organic noise (doesn't reverse the direction)
+        noise = math.sin(t * math.pi * 5) * abs(target_change) * 0.03 * (1 - t)
         predicted_price = price * (1 + target_change * progress + noise)
         trajectory.append({
             "time": start_time + t * horizon_ms,
@@ -242,6 +224,7 @@ class PredictionEngine:
         self.prediction_history = []  # تاريخ التوقعات للتقييم
         self.accuracy_cache = {"1h": None, "24h": None, "all": None}
         self._last_accuracy_calc = 0
+        self.score_ema = 0.0  # Smoothed score
 
     def initialize(self):
         """تحميل النموذج لو موجود"""
@@ -267,6 +250,22 @@ class PredictionEngine:
         else:
             prediction = rule_based_predict(features)
             prediction["method"] = "rules"
+
+        # Smooth the score to prevent flip-flopping
+        raw_score = prediction.get("score", 0.0)
+        self.score_ema = self.score_ema * 0.6 + raw_score * 0.4  # EMA smoothing
+
+        # Override direction based on smoothed score
+        smoothed_confidence = min(abs(self.score_ema), 1.0)
+        if smoothed_confidence < 0.05:
+            prediction["direction"] = "neutral"
+        elif self.score_ema > 0:
+            prediction["direction"] = "up"
+        else:
+            prediction["direction"] = "down"
+        prediction["confidence"] = smoothed_confidence
+        prediction["score"] = round(self.score_ema, 4)
+        prediction["raw_score"] = round(raw_score, 4)
 
         # بناء المنحنى
         trajectory = build_trajectory(price, prediction, features, now)
