@@ -1,10 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-// ─── Supabase config ──────────────────────────────────────────
-const SB_URL = "https://rgspgaoqzpljwjkhqsmo.supabase.co";
-const SB_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJnc3BnYW9xenBsandqa2hxc21vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5MTkwMjIsImV4cCI6MjA5MTQ5NTAyMn0.B0UXZVJ0pvUOnX6-WqQWjUh5RMYQTSysvJksDPStwY8";
-const SB_HEADERS = { "Content-Type": "application/json", "apikey": SB_KEY, "Authorization": `Bearer ${SB_KEY}` };
-
 // ─── Binance WebSocket ────────────────────────────────────────
 const WS_TICKER = "wss://stream.binance.com:9443/ws/btcusdt@ticker";
 const WS_DEPTH  = "wss://stream.binance.com:9443/ws/btcusdt@depth20@1000ms";
@@ -17,7 +12,6 @@ const TRAJ_MIN  = 10;
 const TRAJ_PTS  = 120;
 const HIST_MIN  = 1440; // 24 ساعة
 const UPDATE_MS = 10000;
-const SAVE_MS   = 10000; // save to Supabase every 10s
 
 const safeNum = (v, fb = 0) => { const n = Number(v); return isFinite(n) ? n : fb; };
 
@@ -45,61 +39,6 @@ function calcImbalance(hist) {
   }
   const pct = (recent.at(-1).price - recent[0].price) / recent[0].price;
   return Math.max(-1, Math.min(1, pct / 0.003));
-}
-
-// ─── Supabase helpers ─────────────────────────────────────────
-async function sbSavePrice(price) {
-  try {
-    await fetch(`${SB_URL}/rest/v1/btc_prices`, {
-      method: "POST",
-      headers: { ...SB_HEADERS, "Prefer": "return=minimal" },
-      body: JSON.stringify({ price }),
-    });
-  } catch (_) {}
-}
-
-async function sbCalcAccuracy(minutes) {
-  try {
-    const since = minutes
-      ? new Date(Date.now() - minutes * 60000).toISOString()
-      : new Date(0).toISOString();
-    const res = await fetch(
-      `${SB_URL}/rest/v1/btc_prices?select=time,price&time=gte.${since}&order=time.asc`,
-      { headers: SB_HEADERS }
-    );
-    const rows = await res.json();
-    if (!Array.isArray(rows) || rows.length < 20) return null;
-    // For each point, we "predicted" direction using imbalance calc
-    // Compare: did price go up from point[i] to point[i+lookahead]?
-    // We stored price every 10s so lookahead=6 = 1 minute ahead
-    const lookahead = 6;
-    let correct = 0, total = 0;
-    for (let i = 0; i < rows.length - lookahead; i++) {
-      const window = rows.slice(Math.max(0, i - 4), i + 1);
-      if (window.length < 2) continue;
-      const pct = (window.at(-1).price - window[0].price) / window[0].price;
-      const imb = Math.max(-1, Math.min(1, pct / 0.003));
-      const predictedUp = imb >= 0;
-      const actualUp = rows[i + lookahead].price >= rows[i].price;
-      if (predictedUp === actualUp) correct++;
-      total++;
-    }
-    return total > 0 ? Math.round((correct / total) * 100) : null;
-  } catch (_) { return null; }
-}
-
-async function sbLoadHistory() {
-  try {
-    const since = new Date(Date.now() - 24 * 60 * 60000).toISOString();
-    const res = await fetch(
-      `${SB_URL}/rest/v1/btc_prices?select=time,price&time=gte.${since}&order=time.asc`,
-      { headers: SB_HEADERS }
-    );
-    const rows = await res.json();
-    return Array.isArray(rows)
-      ? rows.map(r => ({ time: new Date(r.time).getTime(), price: safeNum(r.price) })).filter(r => r.price > 0)
-      : [];
-  } catch (_) { return []; }
 }
 
 // ─── Main Component ───────────────────────────────────────────
@@ -225,14 +164,17 @@ export default function App() {
       }
     } catch (_) {}
 
-    sbLoadHistory().then(rows => {
-      if (rows.length > 0) {
-        priceHist.current = rows;
-        setInfo(d => ({ ...d, loaded: true, price: rows.at(-1).price }));
-      } else {
-        setInfo(d => ({ ...d, loaded: true }));
-      }
-    });
+    fetch(`${API_URL}/api/history`)
+      .then(r => r.json())
+      .then(rows => {
+        if (rows.length > 0) {
+          priceHist.current = rows;
+          setInfo(d => ({ ...d, loaded: true, price: rows.at(-1).price }));
+        } else {
+          setInfo(d => ({ ...d, loaded: true }));
+        }
+      })
+      .catch(() => setInfo(d => ({ ...d, loaded: true })));
   }, []);
 
   // Save state on page unload
@@ -263,14 +205,6 @@ export default function App() {
     };
     fetchAccuracy();
     const id = setInterval(fetchAccuracy, 60000);
-    return () => clearInterval(id);
-  }, []);
-
-  // ── Save price to Supabase every 10s ─────────────────────
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (livePrice.current) sbSavePrice(livePrice.current);
-    }, SAVE_MS);
     return () => clearInterval(id);
   }, []);
 
@@ -374,8 +308,12 @@ export default function App() {
       const bidVol = (d.bids || []).reduce((s, [, q]) => s + parseFloat(q), 0);
       const askVol = (d.asks || []).reduce((s, [, q]) => s + parseFloat(q), 0);
       const total  = bidVol + askVol;
-      const bidPct = total > 0 ? (bidVol / total) * 100 : 50;
-      setInfo(d2 => ({ ...d2, bidPct, askPct: 100 - bidPct }));
+      const rawBidPct = total > 0 ? (bidVol / total) * 100 : 50;
+      setInfo(d2 => ({
+        ...d2,
+        bidPct: d2.bidPct ? d2.bidPct * 0.7 + rawBidPct * 0.3 : rawBidPct,
+        askPct: d2.askPct ? d2.askPct * 0.7 + (100 - rawBidPct) * 0.3 : 100 - rawBidPct,
+      }));
     };
     ws.onclose = () => setTimeout(connectDepth, 3000);
     wsDepthRef.current = ws;
@@ -992,7 +930,7 @@ export default function App() {
         <span style={{ fontSize:12, color:"#1a2a3a", letterSpacing:3 }}>BTC/USDT · TRAJECTORY</span>
       </div>
 
-      <div style={{ width:"100%", maxWidth:880, display:"grid", gridTemplateColumns:"1fr 1fr 1fr 1fr 1fr 1fr", gap:8 }}>
+      <div style={{ width:"100%", maxWidth:880, display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(130px, 1fr))", gap:8 }}>
         {[
           { label:"السعر الحالي",      value: price ? `$${safeNum(price).toLocaleString("en",{maximumFractionDigits:0})}` : "---", color:"#c0d8ff" },
           { label:"تغيّر 24 ساعة",     value: price ? `${ch24up?"▲":"▼"} ${Math.abs(safeNum(change24h)).toFixed(2)}%` : "---", color:ch24up?"#00ff88":"#ff4466" },

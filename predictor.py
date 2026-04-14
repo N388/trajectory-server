@@ -199,14 +199,12 @@ def build_trajectory(
     max_change_pct = max(atr_pct * 2, volatility * 3, 0.05)
 
     if direction == "neutral" or confidence < CONFIDENCE_THRESHOLD:
-        # ما عندنا رأي واضح — خط مسطح مع تذبذب طفيف
         trajectory = []
         for i in range(points + 1):
             t = i / points
-            noise = math.sin(t * math.pi * 4) * price * 0.00005
             trajectory.append({
                 "time": start_time + t * horizon_ms,
-                "price": round(price + noise, 2),
+                "price": round(price, 2),
             })
         return trajectory
 
@@ -217,17 +215,12 @@ def build_trajectory(
     trajectory = []
     for i in range(points + 1):
         t = i / points
-
-        # منحنى واقعي: سريع في البداية ثم يتباطأ
-        # (يعكس حقيقة إن التوقع أدق للمدى القريب)
-        progress = 1 - (1 - t) ** 2  # quadratic ease-out
-
-        # تذبذب طبيعي يتناقص مع الوقت
-        noise_amp = volatility * 0.001 * (1 - t * 0.5)
-        noise = math.sin(t * math.pi * 5 + score * 10) * noise_amp
-
-        predicted_price = price * (1 + target_change * progress) + price * noise
-
+        # Clear directional movement, stronger early, slower later
+        progress = 1 - (1 - t) ** 2.5
+        # Very subtle noise that doesn't reverse direction
+        noise_amp = volatility * 0.0003 * (1 - t * 0.7)
+        noise = math.sin(t * math.pi * 7) * noise_amp * t
+        predicted_price = price * (1 + target_change * progress + noise)
         trajectory.append({
             "time": start_time + t * horizon_ms,
             "price": round(predicted_price, 2),
@@ -321,27 +314,24 @@ class PredictionEngine:
             pred["was_correct"] = (pred["direction"] == actual_dir)
 
     def get_accuracy(self) -> dict:
-        """حساب دقة التوقعات"""
         now = time.time() * 1000
+        evaluated = [p for p in self.prediction_history if p.get("was_correct") is not None]
 
         def calc_acc(preds):
-            evaluated = [p for p in preds if p.get("was_correct") is not None]
-            if len(evaluated) < 5:
+            if len(preds) < 5:
                 return None
-            correct = sum(1 for p in evaluated if p["was_correct"])
-            return round(correct / len(evaluated) * 100, 1)
+            correct = sum(1 for p in preds if p["was_correct"])
+            return round(correct / len(preds) * 100, 1)
 
-        # آخر ساعة
-        h1 = [p for p in self.prediction_history if now - p["time"] < 3600_000]
-        # آخر 24 ساعة
-        h24 = [p for p in self.prediction_history if now - p["time"] < 86400_000]
+        h1 = [p for p in evaluated if now - p["time"] < 3600_000]
+        h24 = [p for p in evaluated if now - p["time"] < 86400_000]
 
         return {
             "last_1h": calc_acc(h1),
             "last_24h": calc_acc(h24),
-            "all_time": calc_acc(self.prediction_history),
+            "all_time": calc_acc(evaluated),
             "total_predictions": len(self.prediction_history),
-            "evaluated": len([p for p in self.prediction_history if p.get("was_correct") is not None]),
+            "evaluated": len(evaluated),
         }
 
     def get_feature_importance(self) -> list:

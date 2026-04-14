@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
 import os
 
-from config import HOST, PORT, CORS_ORIGINS, PREDICTION_INTERVAL_SEC
+from config import HOST, PORT, CORS_ORIGINS, PREDICTION_INTERVAL_SEC, SB_URL, SB_HEADERS
 from data_collector import DataCollector
 from predictor import PredictionEngine
 from notifier import send_telegram_alert
@@ -146,6 +146,29 @@ async def get_features():
 async def get_accuracy():
     """دقة التوقعات"""
     return engine.get_accuracy()
+
+
+@app.get("/api/history")
+async def get_history():
+    """Return price history for chart"""
+    try:
+        import httpx
+        from datetime import datetime, timezone
+        cutoff = datetime.fromtimestamp(
+            __import__('time').time() - 86400, tz=timezone.utc
+        ).isoformat()
+        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+            resp = await client.get(
+                f"{SB_URL}/rest/v1/btc_prices",
+                params={"select": "time,price", "time": f"gte.{cutoff}", "order": "time.asc", "limit": "10000"},
+                headers=SB_HEADERS,
+            )
+            rows = resp.json()
+        if isinstance(rows, list):
+            return [{"time": int(__import__('datetime').datetime.fromisoformat(r["time"].replace("+00:00","Z").replace("Z","+00:00")).timestamp() * 1000) if isinstance(r["time"], str) else r["time"], "price": r["price"]} for r in rows if r.get("price")]
+        return []
+    except:
+        return []
 
 
 @app.get("/api/feature-importance")
