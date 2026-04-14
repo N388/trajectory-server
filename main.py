@@ -16,6 +16,7 @@ import os
 from config import HOST, PORT, CORS_ORIGINS, PREDICTION_INTERVAL_SEC
 from data_collector import DataCollector
 from predictor import PredictionEngine
+from notifier import send_telegram_alert
 
 # ─── Logging ─────────────────────────────────────────────────
 logging.basicConfig(
@@ -44,6 +45,8 @@ async def prediction_loop():
 
                 # Save prediction to Supabase
                 asyncio.create_task(collector.save_prediction(prediction))
+
+                asyncio.create_task(send_telegram_alert(prediction))
 
                 # Evaluate predictions from 10 minutes ago
                 asyncio.create_task(collector.evaluate_old_predictions(collector.current_price))
@@ -187,6 +190,21 @@ async def trigger_training():
     if "error" not in result:
         engine.initialize()  # إعادة تحميل النموذج الجديد
     return result
+
+
+@app.get("/api/test-telegram")
+async def test_telegram():
+    """Test Telegram notification"""
+    test_pred = {
+        "direction": "up",
+        "confidence": 0.99,
+        "price": collector.current_price or 0,
+        "method": "test",
+    }
+    import notifier
+    notifier._last_alert_time = 0  # Reset cooldown for test
+    await send_telegram_alert(test_pred)
+    return {"status": "sent", "chat_id": "5164211"}
 
 
 # ═══════════════════════════════════════════════════════════════

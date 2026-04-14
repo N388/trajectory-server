@@ -146,6 +146,54 @@ export default function App() {
     obi: undefined, rsi: 0, atr: 0,
   });
 
+  // ── Alert System ──────────────────────────────────────────
+  const lastAlertTime = useRef(0);
+  const alertEnabled = useRef(true);
+
+  const playAlertSound = useCallback((direction) => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      if (direction === "up") {
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        osc.frequency.linearRampToValueAtTime(660, ctx.currentTime + 0.3);
+      } else {
+        osc.frequency.setValueAtTime(660, ctx.currentTime);
+        osc.frequency.linearRampToValueAtTime(440, ctx.currentTime + 0.3);
+      }
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.5);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.5);
+    } catch(_) {}
+  }, []);
+
+  const sendPushNotification = useCallback((direction, confidence, price) => {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    const arrow = direction === "up" ? "🟢 صعود ▲" : "🔴 هبوط ▼";
+    new Notification("BTC Trajectory", {
+      body: `${arrow}\nالسعر: $${price?.toLocaleString("en")}\nالثقة: ${(confidence*100).toFixed(0)}%`,
+      icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>₿</text></svg>",
+      tag: "btc-alert",
+    });
+  }, []);
+
+  const checkAndAlert = useCallback((direction, confidence, price) => {
+    if (!alertEnabled.current) return;
+    if (direction === "neutral") return;
+    if (confidence < 0.45) return;
+    const now = Date.now();
+    if (now - lastAlertTime.current < 300000) return;
+    lastAlertTime.current = now;
+    playAlertSound(direction);
+    sendPushNotification(direction, confidence, price);
+  }, [playAlertSound, sendPushNotification]);
+
   // ── localStorage persistence ────────────────────────────
   const STORAGE_KEY = "btc_chart_state";
   const saveChartState = useCallback(() => {
@@ -193,6 +241,13 @@ export default function App() {
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
   }, [saveChartState]);
+
+  // Request push notification permission
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
 
   // Fetch accuracy from API every 60s
   useEffect(() => {
@@ -248,6 +303,7 @@ export default function App() {
             predConfidence: data.confidence,
             predMethod: data.method,
           }));
+          checkAndAlert(data.direction, data.confidence, data.price);
         }
         // Also fetch features for display
         try {
@@ -780,19 +836,26 @@ export default function App() {
       ctx.fillText(`$${ep.price.toLocaleString("en",{maximumFractionDigits:0})}`, epX + 6, epY + 4);
     }
 
-    // Price history — break line across gaps > 60s
+    // Price history — break line across gaps
     if (priceHist.current.length > 1) {
       const hg = ctx.createLinearGradient(PL, 0, nowX, 0);
       hg.addColorStop(0, "rgba(180,210,255,0.08)"); hg.addColorStop(1, "rgba(220,235,255,0.92)");
       ctx.strokeStyle = hg; ctx.lineWidth = 1.8;
       ctx.beginPath();
-      const GAP_MS = 60000; // 60 seconds
+      let started = false;
       priceHist.current.forEach((p, i) => {
         const x = tx(p.time), y = ty(p.price);
-        if (i === 0) { ctx.moveTo(x, y); return; }
-        const gap = p.time - priceHist.current[i-1].time;
-        const priceJump = Math.abs(p.price - priceHist.current[i-1].price) / priceHist.current[i-1].price;
-        if (gap > 60000 || priceJump > 0.005) { ctx.moveTo(x, y); } else { ctx.lineTo(x, y); }
+        if (i === 0) { ctx.moveTo(x, y); started = true; return; }
+        const prevP = priceHist.current[i - 1];
+        const timeGap = p.time - prevP.time;
+        const priceJump = Math.abs(p.price - prevP.price) / prevP.price;
+        if (timeGap > 120000 || priceJump > 0.003) {
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
       });
       ctx.stroke();
     }
