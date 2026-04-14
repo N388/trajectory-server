@@ -8,7 +8,10 @@ import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
+import os
 
 from config import HOST, PORT, CORS_ORIGINS, PREDICTION_INTERVAL_SEC
 from data_collector import DataCollector
@@ -181,6 +184,21 @@ async def trigger_training():
     if "error" not in result:
         engine.initialize()  # إعادة تحميل النموذج الجديد
     return result
+
+
+# ═══════════════════════════════════════════════════════════════
+# Serve frontend static files
+# ═══════════════════════════════════════════════════════════════
+frontend_dir = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.isdir(frontend_dir):
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dir, "assets")), name="assets")
+
+    @app.get("/{path:path}")
+    async def serve_frontend(path: str):
+        file_path = os.path.join(frontend_dir, path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(frontend_dir, "index.html"))
 
 
 # ═══════════════════════════════════════════════════════════════
