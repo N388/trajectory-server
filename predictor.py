@@ -298,20 +298,22 @@ class PredictionEngine:
         }
 
     def evaluate_predictions(self, current_price: float):
-        """تقييم التوقعات السابقة بعد مرور الوقت"""
         now = time.time() * 1000
         horizon_ms = PREDICTION_HORIZON_MIN * 60 * 1000
-
         for pred in self.prediction_history:
             if pred["actual_price_after"] is not None:
                 continue
-            if now - pred["time"] < horizon_ms:
+            elapsed = now - pred["time"]
+            if elapsed < horizon_ms:
                 continue
-
-            # مر الوقت الكافي — نقيّم
             pred["actual_price_after"] = current_price
-            actual_dir = "up" if current_price > pred["price_at_prediction"] else "down"
-            pred["was_correct"] = (pred["direction"] == actual_dir)
+            pred["evaluated_at"] = now
+            if pred["direction"] == "neutral":
+                pred["was_correct"] = None
+            elif pred["direction"] == "up":
+                pred["was_correct"] = current_price > pred["price_at_prediction"]
+            else:
+                pred["was_correct"] = current_price < pred["price_at_prediction"]
 
     def get_accuracy(self) -> dict:
         now = time.time() * 1000
@@ -323,13 +325,18 @@ class PredictionEngine:
             correct = sum(1 for p in preds if p["was_correct"])
             return round(correct / len(preds) * 100, 1)
 
-        h1 = [p for p in evaluated if now - p["time"] < 3600_000]
-        h24 = [p for p in evaluated if now - p["time"] < 86400_000]
+        # Filter by when the PREDICTION was made, not when it was evaluated
+        h1_preds = [p for p in evaluated if now - p["time"] < 3600_000]
+        h24_preds = [p for p in evaluated if now - p["time"] < 86400_000]
+
+        acc_1h = calc_acc(h1_preds)
+        acc_24h = calc_acc(h24_preds)
+        acc_all = calc_acc(evaluated)
 
         return {
-            "last_1h": calc_acc(h1),
-            "last_24h": calc_acc(h24),
-            "all_time": calc_acc(evaluated),
+            "last_1h": acc_1h,
+            "last_24h": acc_24h if acc_24h != acc_1h else None,
+            "all_time": acc_all,
             "total_predictions": len(self.prediction_history),
             "evaluated": len(evaluated),
         }

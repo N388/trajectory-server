@@ -72,6 +72,7 @@ export default function App() {
   const yPanOffset  = useRef(0);     // vertical pan offset in price units
   // ── Crosshair ─────────────────────────────────────────────
   const mousePos    = useRef(null);  // {clientX, clientY} for crosshair
+  const bidHistory  = useRef([]);
 
   const autoFollow  = useRef(true);   // true = chart follows current price
   const [showFollow, setShowFollow] = useState(false); // show "back to now" button
@@ -210,9 +211,12 @@ export default function App() {
 
   // ── Trajectory from API every 10s (fallback to local) ────
   useEffect(() => {
+    let controller = null;
     const id = setInterval(async () => {
+      if (controller) controller.abort();
+      controller = new AbortController();
       try {
-        const res = await fetch(`${API_URL}/api/prediction`);
+        const res = await fetch(`${API_URL}/api/prediction`, { signal: controller.signal });
         const data = await res.json();
         if (data.error || !data.trajectory) return;
 
@@ -230,44 +234,35 @@ export default function App() {
         curTrajs.current.push({ t0: now, pts });
         if (curTrajs.current.length > 6) curTrajs.current.shift();
 
-        // Update accuracy display
         if (data.confidence !== undefined) {
           setInfo(d => ({ ...d,
             predDirection: data.direction,
             predConfidence: data.confidence,
             predMethod: data.method,
           }));
-          checkAndAlert(data.direction, data.confidence, data.price);
         }
-        // Also fetch features for display
-        try {
-          const fRes = await fetch(`${API_URL}/api/features`);
-          const fData = await fRes.json();
-          if (fData.obi !== undefined) {
-            setInfo(d => ({ ...d, obi: fData.obi, rsi: fData.rsi_14, atr: fData.atr_pct }));
-          }
-        } catch(_) {}
-      } catch (e) {
-        console.debug("Prediction fetch failed:", e);
-        // Fallback to local calculation
+        checkAndAlert(data.direction, data.confidence, data.price);
+      } catch(e) {
+        if (e.name === 'AbortError') return;
         const price = livePrice.current;
         if (price) {
-          const now = Date.now();
-          const min = Math.floor(now / 60000);
-          if (lastMin.current !== null && min !== lastMin.current) {
-            cloudTrajs.current = [...cloudTrajs.current, ...curTrajs.current]
-              .filter(t => now - t.t0 < 5 * 60000);
-            curTrajs.current = [];
-          }
-          lastMin.current = min;
           const imb = calcImbalance(priceHist.current);
-          const pts = calcTrajectory(price, imb, now);
-          curTrajs.current.push({ t0: now, pts });
+          const pts = calcTrajectory(price, imb, Date.now());
+          curTrajs.current.push({ t0: Date.now(), pts });
           if (curTrajs.current.length > 6) curTrajs.current.shift();
         }
       }
+
+      // Also fetch features
+      try {
+        const fRes = await fetch(`${API_URL}/api/features`, { signal: controller?.signal });
+        const fData = await fRes.json();
+        if (fData.obi !== undefined) {
+          setInfo(d => ({ ...d, obi: fData.obi, rsi: fData.rsi_14, atr: fData.atr_pct }));
+        }
+      } catch(_) {}
     }, 10000);
-    return () => clearInterval(id);
+    return () => { clearInterval(id); if (controller) controller.abort(); };
   }, []);
 
   // ── WebSocket: Ticker ────────────────────────────────────
@@ -309,11 +304,10 @@ export default function App() {
       const askVol = (d.asks || []).reduce((s, [, q]) => s + parseFloat(q), 0);
       const total  = bidVol + askVol;
       const rawBidPct = total > 0 ? (bidVol / total) * 100 : 50;
-      setInfo(d2 => ({
-        ...d2,
-        bidPct: d2.bidPct ? d2.bidPct * 0.7 + rawBidPct * 0.3 : rawBidPct,
-        askPct: d2.askPct ? d2.askPct * 0.7 + (100 - rawBidPct) * 0.3 : 100 - rawBidPct,
-      }));
+      bidHistory.current.push(rawBidPct);
+      if (bidHistory.current.length > 10) bidHistory.current.shift();
+      const smoothBid = bidHistory.current.reduce((a, b) => a + b, 0) / bidHistory.current.length;
+      setInfo(d2 => ({ ...d2, bidPct: Math.round(smoothBid * 10) / 10, askPct: Math.round((100 - smoothBid) * 10) / 10 }));
     };
     ws.onclose = () => setTimeout(connectDepth, 3000);
     wsDepthRef.current = ws;
@@ -328,7 +322,7 @@ export default function App() {
   // Resize canvas whenever window size changes
   useEffect(() => {
     const resizeCanvas = () => {
-      dpr.current = window.devicePixelRatio || 1;
+      dpr.current = Math.min(window.devicePixelRatio || 1, 2);
       const canvas = canvasRef.current;
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
@@ -922,12 +916,12 @@ export default function App() {
   return (
     <div style={{ background:"#040810", height:"100vh", overflow:"hidden", color:"#c0d0e0", fontFamily:"'Courier New',Courier,monospace", direction:"rtl", display:"flex", flexDirection:"column", alignItems:"center", padding:"14px 10px", gap:8, boxSizing:"border-box" }}>
 
-      <div style={{ width:"100%", maxWidth:880, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+      <div style={{ width:"100%", maxWidth:880, display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:4 }}>
         <div style={{ display:"flex", alignItems:"center", gap:8 }}>
           <div style={{ width:8, height:8, borderRadius:"50%", background:dotColor, boxShadow:`0 0 8px ${dotColor}`, animation:"blink 2s infinite" }} />
-          <span style={{ fontSize:10, color:"#334455" }}>{statusText}</span>
+          <span style={{ fontSize:"min(10px, 2vw)", color:"#334455" }}>{statusText}</span>
         </div>
-        <span style={{ fontSize:12, color:"#1a2a3a", letterSpacing:3 }}>BTC/USDT · TRAJECTORY</span>
+        <span style={{ fontSize:"min(12px, 2.5vw)", color:"#1a2a3a", letterSpacing:3 }}>BTC/USDT · TRAJECTORY</span>
       </div>
 
       <div style={{ width:"100%", maxWidth:880, display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(130px, 1fr))", gap:8 }}>
