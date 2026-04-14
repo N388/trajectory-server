@@ -97,6 +97,9 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
+    index_file = os.path.join(os.path.dirname(__file__), "frontend", "dist", "index.html")
+    if os.path.isfile(index_file):
+        return FileResponse(index_file)
     return {
         "service": "BTC Trajectory API",
         "status": "running",
