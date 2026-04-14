@@ -101,6 +101,13 @@ async def root():
     }
 
 
+@app.head("/")
+@app.head("/api/state")
+async def head_check():
+    from fastapi.responses import Response
+    return Response(status_code=200)
+
+
 @app.get("/api/prediction")
 async def get_prediction():
     """
