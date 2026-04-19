@@ -44,6 +44,92 @@ class DataCollector:
         logger.info("Building indicators from live WebSocket data (REST API unavailable).")
         logger.info("Technical indicators will activate after ~15-50 candles (minutes).")
 
+    # ─── Backfill gaps from Binance klines ───────────────────
+    async def backfill_gaps(self):
+        """Fill data gaps from Binance klines when server restarts"""
+        logger.info("Checking for data gaps to backfill...")
+        try:
+            # 1. Find the last saved price time in Supabase
+            async with httpx.AsyncClient(verify=False, timeout=15) as client:
+                resp = await client.get(
+                    f"{SB_URL}/rest/v1/btc_prices?select=time&order=time.desc&limit=1",
+                    headers=SB_HEADERS,
+                )
+                rows = resp.json()
+
+            if not isinstance(rows, list) or not rows:
+                logger.info("No previous data in Supabase, skipping backfill")
+                return
+
+            last_time_str = rows[0]["time"]
+            last_time = datetime.fromisoformat(last_time_str.replace("+00:00", "+00:00"))
+            last_ts = int(last_time.timestamp() * 1000)
+            now_ts = int(time.time() * 1000)
+            gap_minutes = (now_ts - last_ts) / 60000
+
+            if gap_minutes < 2:
+                logger.info(f"No significant gap ({gap_minutes:.1f} min), skipping backfill")
+                return
+
+            logger.info(f"Found gap of {gap_minutes:.1f} minutes. Backfilling from Binance klines...")
+
+            # 2. Fetch 1-minute klines from Binance to cover the gap
+            kline_url = REST_KLINES
+            async with httpx.AsyncClient(verify=False, timeout=30) as client:
+                resp = await client.get(kline_url, params={
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                    "startTime": last_ts,
+                    "endTime": now_ts,
+                    "limit": 1000,
+                })
+                klines = resp.json()
+
+            if not isinstance(klines, list) or not klines:
+                logger.warning("No klines returned from Binance for backfill")
+                return
+
+            # 3. Save each kline as a price point in Supabase
+            saved = 0
+            async with httpx.AsyncClient(verify=False, timeout=30) as client:
+                batch = []
+                for k in klines:
+                    close_price = float(k[4])
+                    close_time = int(k[6])  # kline close time
+                    ts = datetime.fromtimestamp(close_time / 1000, tz=timezone.utc).isoformat()
+                    batch.append({"time": ts, "price": close_price})
+
+                    if len(batch) >= 50:
+                        await client.post(
+                            f"{SB_URL}/rest/v1/btc_prices",
+                            headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                            json=batch,
+                        )
+                        saved += len(batch)
+                        batch = []
+
+                if batch:
+                    await client.post(
+                        f"{SB_URL}/rest/v1/btc_prices",
+                        headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                        json=batch,
+                    )
+                    saved += len(batch)
+
+            logger.info(f"Backfilled {saved} price points from Binance klines")
+
+            # 4. Also update indicators with the backfilled klines
+            for k in klines:
+                o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
+                v = float(k[5])
+                self.indicators.update_candle(o, h, l, c, v)
+                self.current_price = c
+
+            logger.info(f"Indicators warmed up with {len(klines)} backfilled candles")
+
+        except Exception as e:
+            logger.error(f"Backfill failed: {e}")
+
     # ─── Load price history from Supabase ────────────────────
     async def load_supabase_history(self):
         """تحميل آخر 24 ساعة من Supabase"""
@@ -192,6 +278,7 @@ class DataCollector:
         """حلقة الاتصال الرئيسية — تعيد الاتصال تلقائياً"""
         self._running = True
         await self.load_history()
+        await self.backfill_gaps()
 
         while self._running:
             try:

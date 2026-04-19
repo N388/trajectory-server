@@ -150,24 +150,66 @@ async def get_accuracy():
 
 @app.get("/api/history")
 async def get_history():
-    """Return price history for chart"""
+    """Return full 24-hour price history with pagination"""
     try:
         import httpx
         from datetime import datetime, timezone
         cutoff = datetime.fromtimestamp(
-            __import__('time').time() - 86400, tz=timezone.utc
+            time.time() - 86400, tz=timezone.utc
         ).isoformat()
-        async with httpx.AsyncClient(verify=False, timeout=15) as client:
-            resp = await client.get(
-                f"{SB_URL}/rest/v1/btc_prices",
-                params={"select": "time,price", "time": f"gte.{cutoff}", "order": "time.asc", "limit": "10000"},
-                headers=SB_HEADERS,
-            )
-            rows = resp.json()
-        if isinstance(rows, list):
-            return [{"time": int(__import__('datetime').datetime.fromisoformat(r["time"].replace("+00:00","Z").replace("Z","+00:00")).timestamp() * 1000) if isinstance(r["time"], str) else r["time"], "price": r["price"]} for r in rows if r.get("price")]
-        return []
-    except:
+
+        all_rows = []
+        page_size = 1000
+        offset = 0
+
+        async with httpx.AsyncClient(verify=False, timeout=30) as client:
+            while True:
+                resp = await client.get(
+                    f"{SB_URL}/rest/v1/btc_prices",
+                    params={
+                        "select": "time,price",
+                        "time": f"gte.{cutoff}",
+                        "order": "time.asc",
+                        "limit": str(page_size),
+                        "offset": str(offset),
+                    },
+                    headers=SB_HEADERS,
+                )
+                rows = resp.json()
+                if not isinstance(rows, list) or not rows:
+                    break
+                all_rows.extend(rows)
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+
+        # Convert to frontend format
+        result = []
+        for r in all_rows:
+            try:
+                t = r.get("time", "")
+                if isinstance(t, str):
+                    ts = int(datetime.fromisoformat(t.replace("+00:00", "+00:00")).timestamp() * 1000)
+                else:
+                    ts = int(t)
+                p = float(r.get("price", 0))
+                if p > 0:
+                    result.append({"time": ts, "price": p})
+            except Exception:
+                continue
+
+        # Downsample if too many points (keep max 5000 for performance)
+        if len(result) > 5000:
+            old_part = result[:-1000]
+            recent_part = result[-1000:]
+            step = max(1, len(old_part) // 4000)
+            downsampled = old_part[::step]
+            result = downsampled + recent_part
+
+        logger.info(f"History API: returning {len(result)} points")
+        return result
+    except Exception as e:
+        logger.error(f"History API error: {e}")
         return []
 
 
