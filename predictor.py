@@ -335,12 +335,22 @@ class PredictionEngine:
         acc_24h = calc_acc(h24_preds)
         acc_all = calc_acc(evaluated)
 
+        # Breakdown by direction
+        up_preds = [p for p in evaluated if p.get("direction") == "up"]
+        down_preds = [p for p in evaluated if p.get("direction") == "down"]
+        neutral_preds = [p for p in evaluated if p.get("direction") not in ("up", "down")]
+
         return {
-            "last_1h": acc_1h,
-            "last_24h": acc_24h if acc_24h != acc_1h else None,
-            "all_time": acc_all,
+            "last_1h": calc_acc(h1_preds),
+            "last_24h": calc_acc(h24_preds) if calc_acc(h24_preds) != calc_acc(h1_preds) else None,
+            "all_time": calc_acc(evaluated),
             "total_predictions": len(self.prediction_history),
             "evaluated": len(evaluated),
+            "breakdown": {
+                "up": {"count": len(up_preds), "accuracy": calc_acc(up_preds)},
+                "down": {"count": len(down_preds), "accuracy": calc_acc(down_preds)},
+                "neutral": {"count": len(neutral_preds), "accuracy": calc_acc(neutral_preds)},
+            }
         }
 
     def get_feature_importance(self) -> list:

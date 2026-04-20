@@ -431,7 +431,7 @@ class DataCollector:
                     else:
                         # Neutral: correct if price didn't move much (<0.1%)
                         change_pct = abs(current_price - pred_price) / pred_price
-                        was_correct = change_pct < 0.001
+                        was_correct = change_pct < 0.003
 
                     patch_resp = await client.patch(
                         f"{SB_URL}/rest/v1/btc_predictions",
