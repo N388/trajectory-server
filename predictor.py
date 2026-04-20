@@ -224,7 +224,7 @@ class PredictionEngine:
         self.prediction_history = []  # تاريخ التوقعات للتقييم
         self.accuracy_cache = {"1h": None, "24h": None, "all": None}
         self._last_accuracy_calc = 0
-        self.score_ema = 0.0  # Smoothed score
+        self.score_ema = None  # Will initialize on first prediction
 
     def initialize(self):
         """تحميل النموذج لو موجود"""
@@ -253,7 +253,10 @@ class PredictionEngine:
 
         # Smooth the score to prevent flip-flopping
         raw_score = prediction.get("score", 0.0)
-        self.score_ema = self.score_ema * 0.6 + raw_score * 0.4  # EMA smoothing
+        if self.score_ema is None:
+            self.score_ema = raw_score  # Initialize to first real score
+        else:
+            self.score_ema = self.score_ema * 0.3 + raw_score * 0.7
 
         # Override direction based on smoothed score
         smoothed_confidence = min(abs(self.score_ema), 1.0)

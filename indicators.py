@@ -413,9 +413,13 @@ class IndicatorManager:
         if len(hist) >= 60:
             p_1m = hist[-60]["price"]
             self.latest["momentum_1m"] = round((price - p_1m) / p_1m * 100, 4)
-        if len(hist) >= 300:
-            p_5m = hist[-300]["price"]
-            self.latest["momentum_5m"] = round((price - p_5m) / p_5m * 100, 4)
+        # 5-minute momentum: find price from ~5 min ago by time, not by index
+        five_min_ago = timestamp - 300000  # 5 minutes in ms
+        for j in range(len(hist) - 1, -1, -1):
+            if hist[j]["time"] <= five_min_ago:
+                p_5m = hist[j]["price"]
+                self.latest["momentum_5m"] = round((price - p_5m) / p_5m * 100, 4)
+                break
 
         # تقلب 5 دقائق
         if len(hist) >= 60:

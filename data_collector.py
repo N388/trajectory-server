@@ -377,23 +377,69 @@ class DataCollector:
             logger.debug(f"Save prediction failed: {e}")
 
     async def evaluate_old_predictions(self, current_price: float):
+        """Evaluate predictions that are at least 10 minutes old"""
         try:
-            from datetime import datetime, timezone, timedelta
-            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
-            async with httpx.AsyncClient(verify=False, timeout=10) as client:
+            cutoff = (datetime.now(timezone.utc) - __import__('datetime').timedelta(minutes=10)).isoformat()
+
+            async with httpx.AsyncClient(verify=False, timeout=15) as client:
                 resp = await client.get(
-                    f"{SB_URL}/rest/v1/btc_predictions?actual_price_after=is.null&time=lte.{cutoff}&limit=50",
+                    f"{SB_URL}/rest/v1/btc_predictions",
+                    params={
+                        "select": "id,price_at_prediction,direction",
+                        "actual_price_after": "is.null",
+                        "time": f"lte.{cutoff}",
+                        "limit": "100",
+                        "order": "time.asc",
+                    },
                     headers=SB_HEADERS,
                 )
+
+                if resp.status_code != 200:
+                    logger.debug(f"Evaluate query failed: {resp.status_code} {resp.text[:200]}")
+                    return
+
                 rows = resp.json()
                 if not isinstance(rows, list) or not rows:
                     return
+
+                logger.info(f"Evaluating {len(rows)} old predictions...")
+
+                evaluated_count = 0
                 for row in rows:
-                    was_correct = (row["direction"] == "up" and current_price > row["price_at_prediction"]) or (row["direction"] == "down" and current_price < row["price_at_prediction"])
-                    await client.patch(
-                        f"{SB_URL}/rest/v1/btc_predictions?id=eq.{row['id']}",
-                        headers={**SB_HEADERS, "Prefer": "return=minimal"},
-                        json={"actual_price_after": current_price, "was_correct": was_correct},
-                    )
+                    try:
+                        pred_price = float(row.get("price_at_prediction", 0))
+                        direction = row.get("direction", "")
+
+                        if pred_price <= 0 or not direction:
+                            continue
+
+                        if direction == "up":
+                            was_correct = current_price > pred_price
+                        elif direction == "down":
+                            was_correct = current_price < pred_price
+                        else:
+                            was_correct = None
+
+                        patch_resp = await client.patch(
+                            f"{SB_URL}/rest/v1/btc_predictions",
+                            params={"id": f"eq.{row['id']}"},
+                            headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                            json={
+                                "actual_price_after": current_price,
+                                "was_correct": was_correct,
+                            },
+                        )
+
+                        if patch_resp.status_code in (200, 204):
+                            evaluated_count += 1
+                        else:
+                            logger.debug(f"Patch failed for id={row['id']}: {patch_resp.status_code}")
+                    except Exception as e:
+                        logger.debug(f"Eval row error: {e}")
+                        continue
+
+                if evaluated_count > 0:
+                    logger.info(f"Evaluated {evaluated_count} predictions (current price: ${current_price:,.2f})")
+
         except Exception as e:
             logger.debug(f"Evaluate predictions failed: {e}")
