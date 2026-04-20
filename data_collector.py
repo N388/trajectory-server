@@ -420,12 +420,18 @@ class DataCollector:
                     row_id = row.get("id")
                     row_time = row.get("time", "?")
 
-                    if pred_price <= 0 or not direction or direction == "neutral":
-                        logger.debug(f"[EVAL] Skipping id={row_id}: price={pred_price}, dir={direction}")
+                    if pred_price <= 0:
+                        logger.debug(f"[EVAL] Skipping id={row_id}: invalid price={pred_price}")
                         continue
 
-                    was_correct = (direction == "up" and current_price > pred_price) or \
-                                  (direction == "down" and current_price < pred_price)
+                    if direction == "up":
+                        was_correct = current_price > pred_price
+                    elif direction == "down":
+                        was_correct = current_price < pred_price
+                    else:
+                        # Neutral: correct if price didn't move much (<0.1%)
+                        change_pct = abs(current_price - pred_price) / pred_price
+                        was_correct = change_pct < 0.001
 
                     patch_resp = await client.patch(
                         f"{SB_URL}/rest/v1/btc_predictions",
