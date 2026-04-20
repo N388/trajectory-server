@@ -379,67 +379,73 @@ class DataCollector:
     async def evaluate_old_predictions(self, current_price: float):
         """Evaluate predictions that are at least 10 minutes old"""
         try:
-            cutoff = (datetime.now(timezone.utc) - __import__('datetime').timedelta(minutes=10)).isoformat()
+            from datetime import timedelta
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+            logger.info(f"[EVAL] Checking predictions before {cutoff}, current price: ${current_price:,.2f}")
+
+            url = f"{SB_URL}/rest/v1/btc_predictions"
+            params = {
+                "select": "id,price_at_prediction,direction,time",
+                "actual_price_after": "is.null",
+                "time": f"lte.{cutoff}",
+                "limit": "100",
+                "order": "time.asc",
+            }
 
             async with httpx.AsyncClient(verify=False, timeout=15) as client:
-                resp = await client.get(
-                    f"{SB_URL}/rest/v1/btc_predictions",
-                    params={
-                        "select": "id,price_at_prediction,direction",
-                        "actual_price_after": "is.null",
-                        "time": f"lte.{cutoff}",
-                        "limit": "100",
-                        "order": "time.asc",
-                    },
-                    headers=SB_HEADERS,
-                )
+                resp = await client.get(url, params=params, headers=SB_HEADERS)
+                logger.info(f"[EVAL] GET status: {resp.status_code}")
 
                 if resp.status_code != 200:
-                    logger.debug(f"Evaluate query failed: {resp.status_code} {resp.text[:200]}")
+                    logger.error(f"[EVAL] Query failed: {resp.status_code} - {resp.text[:300]}")
                     return
 
                 rows = resp.json()
-                if not isinstance(rows, list) or not rows:
-                    return
+                logger.info(f"[EVAL] Found {len(rows) if isinstance(rows, list) else 'non-list'} unevaluated predictions")
 
-                logger.info(f"Evaluating {len(rows)} old predictions...")
+                if not isinstance(rows, list) or not rows:
+                    # Debug: check if there are ANY predictions at all
+                    debug_resp = await client.get(
+                        f"{SB_URL}/rest/v1/btc_predictions",
+                        params={"select": "id,time,actual_price_after", "limit": "5", "order": "time.desc"},
+                        headers=SB_HEADERS,
+                    )
+                    logger.info(f"[EVAL] Debug - latest 5 predictions: {debug_resp.text[:500]}")
+                    return
 
                 evaluated_count = 0
                 for row in rows:
-                    try:
-                        pred_price = float(row.get("price_at_prediction", 0))
-                        direction = row.get("direction", "")
+                    pred_price = float(row.get("price_at_prediction", 0))
+                    direction = row.get("direction", "")
+                    row_id = row.get("id")
+                    row_time = row.get("time", "?")
 
-                        if pred_price <= 0 or not direction:
-                            continue
-
-                        if direction == "up":
-                            was_correct = current_price > pred_price
-                        elif direction == "down":
-                            was_correct = current_price < pred_price
-                        else:
-                            was_correct = None
-
-                        patch_resp = await client.patch(
-                            f"{SB_URL}/rest/v1/btc_predictions",
-                            params={"id": f"eq.{row['id']}"},
-                            headers={**SB_HEADERS, "Prefer": "return=minimal"},
-                            json={
-                                "actual_price_after": current_price,
-                                "was_correct": was_correct,
-                            },
-                        )
-
-                        if patch_resp.status_code in (200, 204):
-                            evaluated_count += 1
-                        else:
-                            logger.debug(f"Patch failed for id={row['id']}: {patch_resp.status_code}")
-                    except Exception as e:
-                        logger.debug(f"Eval row error: {e}")
+                    if pred_price <= 0 or not direction or direction == "neutral":
+                        logger.debug(f"[EVAL] Skipping id={row_id}: price={pred_price}, dir={direction}")
                         continue
 
-                if evaluated_count > 0:
-                    logger.info(f"Evaluated {evaluated_count} predictions (current price: ${current_price:,.2f})")
+                    was_correct = (direction == "up" and current_price > pred_price) or \
+                                  (direction == "down" and current_price < pred_price)
+
+                    patch_resp = await client.patch(
+                        f"{SB_URL}/rest/v1/btc_predictions",
+                        params={"id": f"eq.{row_id}"},
+                        headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                        json={
+                            "actual_price_after": round(current_price, 2),
+                            "was_correct": was_correct,
+                        },
+                    )
+
+                    logger.info(f"[EVAL] PATCH id={row_id} time={row_time} dir={direction} pred=${pred_price:,.0f} actual=${current_price:,.0f} correct={was_correct} status={patch_resp.status_code}")
+
+                    if patch_resp.status_code in (200, 204):
+                        evaluated_count += 1
+                    else:
+                        logger.error(f"[EVAL] PATCH failed: {patch_resp.status_code} {patch_resp.text[:200]}")
+                        continue
+
+                logger.info(f"[EVAL] Done: evaluated {evaluated_count} of {len(rows)}")
 
         except Exception as e:
-            logger.debug(f"Evaluate predictions failed: {e}")
+            logger.error(f"[EVAL] Exception: {type(e).__name__}: {e}")

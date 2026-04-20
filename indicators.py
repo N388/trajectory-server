@@ -320,7 +320,7 @@ class IndicatorManager:
 
         # تتبع قيم OBI لحساب معدل التغير
         self.obi_history = deque(maxlen=30)
-        self.price_history = deque(maxlen=300)  # آخر 5 دقائق @ 1/ثانية
+        self.price_history = deque(maxlen=3000)  # 50 minutes of ticks at 1/sec
 
         # آخر قيم محسوبة
         self.latest = {}
@@ -408,25 +408,31 @@ class IndicatorManager:
         self.price_history.append({"price": price, "time": timestamp})
         self.latest["price"] = price
 
-        # حساب الزخم
+        # Momentum calculations using time-based lookup
         hist = list(self.price_history)
-        if len(hist) >= 60:
-            p_1m = hist[-60]["price"]
-            self.latest["momentum_1m"] = round((price - p_1m) / p_1m * 100, 4)
-        # 5-minute momentum: find price from ~5 min ago by time, not by index
-        five_min_ago = timestamp - 300000  # 5 minutes in ms
-        for j in range(len(hist) - 1, -1, -1):
-            if hist[j]["time"] <= five_min_ago:
-                p_5m = hist[j]["price"]
-                self.latest["momentum_5m"] = round((price - p_5m) / p_5m * 100, 4)
-                break
+        if len(hist) >= 2:
+            # 1-minute momentum
+            one_min_ago = timestamp - 60000
+            for j in range(len(hist) - 1, -1, -1):
+                if hist[j]["time"] <= one_min_ago:
+                    self.latest["momentum_1m"] = round((price - hist[j]["price"]) / hist[j]["price"] * 100, 4)
+                    break
 
-        # تقلب 5 دقائق
-        if len(hist) >= 60:
-            recent = [h["price"] for h in hist[-300:]]
-            arr = np.array(recent)
-            returns = np.diff(arr) / arr[:-1]
-            self.latest["volatility_5m"] = round(float(np.std(returns) * 100), 4)
+            # 5-minute momentum
+            five_min_ago = timestamp - 300000
+            for j in range(len(hist) - 1, -1, -1):
+                if hist[j]["time"] <= five_min_ago:
+                    self.latest["momentum_5m"] = round((price - hist[j]["price"]) / hist[j]["price"] * 100, 4)
+                    break
+
+        # Volatility: use time-based window too
+        if len(hist) >= 10:
+            five_min_ago = timestamp - 300000
+            recent = [h["price"] for h in hist if h["time"] >= five_min_ago]
+            if len(recent) >= 5:
+                arr = np.array(recent)
+                returns = np.diff(arr) / arr[:-1]
+                self.latest["volatility_5m"] = round(float(np.std(returns) * 100), 4)
 
     def get_feature_vector(self) -> dict:
         """إرجاع كل المؤشرات كـ dict — جاهز لإدخاله للنموذج"""
