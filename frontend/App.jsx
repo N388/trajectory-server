@@ -258,7 +258,7 @@ export default function App() {
         const fRes = await fetch(`${API_URL}/api/features`, { signal: controller?.signal });
         const fData = await fRes.json();
         if (fData.obi !== undefined) {
-          setInfo(d => ({ ...d, obi: fData.obi, rsi: fData.rsi_14, atr: fData.atr_pct }));
+          setInfo(d => ({ ...d, obi: fData.obi, rsi: fData.rsi_14, atr: fData.atr_pct, indicatorsReady: fData.rsi_14 !== 0 }));
         }
       } catch(_) {}
     }, 10000);
@@ -968,6 +968,11 @@ export default function App() {
           <div style={{ display:"flex", height:3, borderRadius:2, overflow:"hidden", background:"rgba(255,255,255,0.03)" }}>
             <div style={{ width:`${Math.max(2, (0.5 + info.obi/2) * 100)}%`, background: info.obi > 0 ? "linear-gradient(90deg,#004422,#00aa55)" : "linear-gradient(90deg,#aa2233,#440011)", transition:"width 0.8s ease" }} />
           </div>
+        </div>
+      )}
+      {info.indicatorsReady === false && info.obi !== undefined && (
+        <div style={{ width:"100%", maxWidth:880, fontSize:9, color:"#445566", textAlign:"center", padding:2 }}>
+          ⏳ المؤشرات الفنية قيد التحميل — ستعمل خلال دقائق
         </div>
       )}
 

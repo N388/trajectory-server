@@ -44,91 +44,114 @@ class DataCollector:
         logger.info("Building indicators from live WebSocket data (REST API unavailable).")
         logger.info("Technical indicators will activate after ~15-50 candles (minutes).")
 
-    # ─── Backfill gaps from Binance klines ───────────────────
-    async def backfill_gaps(self):
-        """Fill data gaps from Binance klines when server restarts"""
-        logger.info("Checking for data gaps to backfill...")
+    # ─── Build candles from Supabase history ───────────────────
+    async def backfill_from_supabase(self):
+        """Build 1-minute candles from Supabase price history to warm up indicators"""
+        logger.info("Building candles from Supabase history to warm up indicators...")
         try:
-            # 1. Find the last saved price time in Supabase
-            async with httpx.AsyncClient(verify=False, timeout=15) as client:
-                resp = await client.get(
-                    f"{SB_URL}/rest/v1/btc_prices?select=time&order=time.desc&limit=1",
-                    headers=SB_HEADERS,
-                )
-                rows = resp.json()
+            cutoff = datetime.fromtimestamp(
+                time.time() - 86400, tz=timezone.utc
+            ).isoformat()
 
-            if not isinstance(rows, list) or not rows:
-                logger.info("No previous data in Supabase, skipping backfill")
-                return
-
-            last_time_str = rows[0]["time"]
-            last_time = datetime.fromisoformat(last_time_str.replace("+00:00", "+00:00"))
-            last_ts = int(last_time.timestamp() * 1000)
-            now_ts = int(time.time() * 1000)
-            gap_minutes = (now_ts - last_ts) / 60000
-
-            if gap_minutes < 2:
-                logger.info(f"No significant gap ({gap_minutes:.1f} min), skipping backfill")
-                return
-
-            logger.info(f"Found gap of {gap_minutes:.1f} minutes. Backfilling from Binance klines...")
-
-            # 2. Fetch 1-minute klines from Binance to cover the gap
-            kline_url = REST_KLINES
+            all_rows = []
+            page_size = 1000
+            offset = 0
             async with httpx.AsyncClient(verify=False, timeout=30) as client:
-                resp = await client.get(kline_url, params={
-                    "symbol": "BTCUSDT",
-                    "interval": "1m",
-                    "startTime": last_ts,
-                    "endTime": now_ts,
-                    "limit": 1000,
-                })
-                klines = resp.json()
-
-            if not isinstance(klines, list) or not klines:
-                logger.warning("No klines returned from Binance for backfill")
-                return
-
-            # 3. Save each kline as a price point in Supabase
-            saved = 0
-            async with httpx.AsyncClient(verify=False, timeout=30) as client:
-                batch = []
-                for k in klines:
-                    close_price = float(k[4])
-                    close_time = int(k[6])  # kline close time
-                    ts = datetime.fromtimestamp(close_time / 1000, tz=timezone.utc).isoformat()
-                    batch.append({"time": ts, "price": close_price})
-
-                    if len(batch) >= 50:
-                        await client.post(
-                            f"{SB_URL}/rest/v1/btc_prices",
-                            headers={**SB_HEADERS, "Prefer": "return=minimal"},
-                            json=batch,
-                        )
-                        saved += len(batch)
-                        batch = []
-
-                if batch:
-                    await client.post(
+                while True:
+                    resp = await client.get(
                         f"{SB_URL}/rest/v1/btc_prices",
-                        headers={**SB_HEADERS, "Prefer": "return=minimal"},
-                        json=batch,
+                        params={
+                            "select": "time,price",
+                            "time": f"gte.{cutoff}",
+                            "order": "time.asc",
+                            "limit": str(page_size),
+                            "offset": str(offset),
+                        },
+                        headers=SB_HEADERS,
                     )
-                    saved += len(batch)
+                    rows = resp.json()
+                    if not isinstance(rows, list) or not rows:
+                        break
+                    all_rows.extend(rows)
+                    if len(rows) < page_size:
+                        break
+                    offset += page_size
 
-            logger.info(f"Backfilled {saved} price points from Binance klines")
+            if len(all_rows) < 10:
+                logger.info(f"Not enough Supabase data for backfill ({len(all_rows)} rows)")
+                return
 
-            # 4. Also update indicators with the backfilled klines
-            for k in klines:
-                o, h, l, c = float(k[1]), float(k[2]), float(k[3]), float(k[4])
-                v = float(k[5])
-                self.indicators.update_candle(o, h, l, c, v)
-                self.current_price = c
+            logger.info(f"Loaded {len(all_rows)} price points from Supabase")
 
-            logger.info(f"Indicators warmed up with {len(klines)} backfilled candles")
+            # Convert to timestamps and prices
+            points = []
+            for r in all_rows:
+                try:
+                    t = r.get("time", "")
+                    if isinstance(t, str):
+                        ts = int(datetime.fromisoformat(
+                            t.replace("+00:00", "+00:00")
+                        ).timestamp() * 1000)
+                    else:
+                        ts = int(t)
+                    p = float(r.get("price", 0))
+                    if p > 0:
+                        points.append({"time": ts, "price": p})
+                except Exception:
+                    continue
+
+            if len(points) < 10:
+                return
+
+            # Build 1-minute OHLCV candles from price points
+            candle_interval = 60000  # 1 minute in ms
+            candles_built = 0
+
+            first_time = points[0]["time"]
+            last_time = points[-1]["time"]
+            bucket_start = (first_time // candle_interval) * candle_interval
+
+            i = 0
+            while bucket_start < last_time and i < len(points):
+                bucket_end = bucket_start + candle_interval
+
+                # Collect all points in this bucket
+                bucket_prices = []
+                while i < len(points) and points[i]["time"] < bucket_end:
+                    bucket_prices.append(points[i]["price"])
+                    i += 1
+
+                if bucket_prices:
+                    o = bucket_prices[0]
+                    h = max(bucket_prices)
+                    l = min(bucket_prices)
+                    c = bucket_prices[-1]
+                    v = len(bucket_prices) * 100  # Approximate volume
+
+                    self.indicators.update_candle(o, h, l, c, v)
+                    self.current_price = c
+                    candles_built += 1
+
+                bucket_start = bucket_end
+
+            # Populate kline history for frontend
+            self.kline_history = [
+                {"time": p["time"], "close": p["price"]}
+                for p in points[-500:]
+            ]
+
+            logger.info(
+                f"Built {candles_built} candles from Supabase data. "
+                f"Indicators should be warm now."
+            )
+
+            # Log indicator status
+            features = self.indicators.get_feature_vector()
+            non_zero = {k: v for k, v in features.items() if v != 0}
+            logger.info(f"Non-zero indicators: {list(non_zero.keys())}")
 
         except Exception as e:
-            logger.error(f"Backfill failed: {e}")
+            logger.error(f"Backfill from Supabase failed: {e}")
 
     # ─── Load price history from Supabase ────────────────────
     async def load_supabase_history(self):
@@ -278,7 +301,7 @@ class DataCollector:
         """حلقة الاتصال الرئيسية — تعيد الاتصال تلقائياً"""
         self._running = True
         await self.load_history()
-        await self.backfill_gaps()
+        await self.backfill_from_supabase()
 
         while self._running:
             try:

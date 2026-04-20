@@ -229,6 +229,10 @@ async def get_state():
         "method": latest_prediction.get("method"),
     }
     state["accuracy"] = engine.get_accuracy()
+    features = collector.indicators.get_feature_vector()
+    indicators_ready = features.get("rsi_14", 0) != 0 and features.get("ema_9_diff", 0) != 0
+    state["indicators_ready"] = indicators_ready
+    state["klines_count"] = len(collector.kline_history)
     return state
 
 
