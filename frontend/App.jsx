@@ -776,9 +776,7 @@ export default function App() {
 
     // Price history — break line across gaps
     if (priceHist.current.length > 1) {
-      const hg = ctx.createLinearGradient(PL, 0, nowX, 0);
-      hg.addColorStop(0, "rgba(180,210,255,0.08)"); hg.addColorStop(1, "rgba(220,235,255,0.92)");
-      ctx.strokeStyle = hg; ctx.lineWidth = 1.8;
+      ctx.strokeStyle = "rgba(220,235,255,0.92)"; ctx.lineWidth = 1.8;
       ctx.beginPath();
       let started = false;
       priceHist.current.forEach((p, i) => {
