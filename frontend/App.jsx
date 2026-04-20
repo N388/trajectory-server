@@ -986,16 +986,16 @@ export default function App() {
             setShowFollow(false);
             saveChartState();
           }} style={{
-            position:"absolute", bottom:14, left:14,
+            position:"absolute", bottom:14, right:14,
             background:"rgba(80,150,255,0.15)",
             border:"1px solid rgba(80,150,255,0.4)",
-            borderRadius:6, color:"#88bbff",
-            fontSize:11, padding:"5px 12px",
+            borderRadius:"50%", color:"#88bbff",
+            fontSize:16, width:32, height:32,
+            display:"flex", alignItems:"center", justifyContent:"center",
             cursor:"pointer", backdropFilter:"blur(4px)",
-            fontFamily:"'Courier New',monospace",
             transition:"opacity 0.3s",
           }}>
-            ◎ العودة للسعر الحالي
+            ◎
           </button>
         )}
         {info.predDirection && (
