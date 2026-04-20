@@ -99,7 +99,23 @@ def rule_based_predict(features: dict) -> dict:
     if confidence < 0.1:
         direction = "neutral"
     elif normalized > 0:
-        direction = "up"
+        # Require stronger confirmation for "up" signals
+        confirmations = 0
+        if features.get("obi", 0) > 0.1:          confirmations += 1
+        if features.get("volume_delta", 0) > 0.1:  confirmations += 1
+        if features.get("rsi_14", 50) > 45:         confirmations += 1
+        if features.get("momentum_1m", 0) > 0:      confirmations += 1
+        if features.get("macd_hist", 0) > 0:        confirmations += 1
+        if features.get("ema_9_diff", 0) > 0:       confirmations += 1
+
+        if confirmations >= 3:
+            direction = "up"
+        else:
+            if confirmations <= 1:
+                direction = "down"
+                confidence = confidence * 0.3
+            else:
+                direction = "neutral"
     else:
         direction = "down"
 
@@ -273,17 +289,18 @@ class PredictionEngine:
         # بناء المنحنى
         trajectory = build_trajectory(price, prediction, features, now)
 
-        # تسجيل التوقع للتقييم لاحقاً
-        self.prediction_history.append({
-            "time": now,
-            "price_at_prediction": price,
-            "direction": prediction["direction"],
-            "confidence": prediction["confidence"],
-            "score": prediction.get("score", 0),
-            "method": prediction["method"],
-            "features": {k: v for k, v in features.items()},  # نسخة
-            "actual_price_after": None,  # يُملأ لاحقاً
-        })
+        # Only log predictions with meaningful confidence
+        if not (prediction["direction"] == "neutral" and prediction["confidence"] < 0.05):
+            self.prediction_history.append({
+                "time": now,
+                "price_at_prediction": price,
+                "direction": prediction["direction"],
+                "confidence": prediction["confidence"],
+                "score": prediction.get("score", 0),
+                "method": prediction["method"],
+                "features": {k: v for k, v in features.items()},
+                "actual_price_after": None,
+            })
 
         # حذف التوقعات القديمة (أكثر من 48 ساعة)
         cutoff = now - 48 * 3600 * 1000
