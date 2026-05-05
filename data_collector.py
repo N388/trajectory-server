@@ -360,19 +360,64 @@ class DataCollector:
 
     async def save_prediction(self, prediction: dict):
         try:
+            from datetime import datetime, timezone
+
+            # وقت صريح واحد مشترك بين الجدولين — ضروري للـ join
+            now_iso = datetime.now(timezone.utc).isoformat()
+
             payload = {
+                "time": now_iso,
                 "price_at_prediction": prediction.get("price"),
                 "direction": prediction.get("direction"),
                 "confidence": prediction.get("confidence"),
                 "score": prediction.get("score", 0),
                 "method": prediction.get("method"),
             }
+
+            features = prediction.get("features", {})
+
+            feat_payload = {
+                "time": now_iso,
+                "price": prediction.get("price", 0),
+                "obi": features.get("obi", 0.0),
+                "obi_rate": features.get("obi_rate", 0.0),
+                "weighted_depth_imb": features.get("weighted_depth_imb", 0.0),
+                "micro_price_diff": features.get("micro_price_diff", 0.0),
+                "vamp_diff": features.get("vamp_diff", 0.0),
+                "spread_pct": features.get("spread_pct", 0.0),
+                "volume_delta": features.get("volume_delta", 0.0),
+                "trade_intensity": features.get("trade_intensity", 0.0),
+                "taker_buy_ratio": features.get("taker_buy_ratio", 0.0),
+                "rsi_14": features.get("rsi_14", 0.0),
+                "ema_9_diff": features.get("ema_9_diff", 0.0),
+                "ema_21_diff": features.get("ema_21_diff", 0.0),
+                "ema_50_diff": features.get("ema_50_diff", 0.0),
+                "macd_hist": features.get("macd_hist", 0.0),
+                "macd_line": features.get("macd_line", 0.0),
+                "bb_position": features.get("bb_position", 0.0),
+                "bb_width": features.get("bb_width", 0.0),
+                "atr_14": features.get("atr_14", 0.0),
+                "atr_pct": features.get("atr_pct", 0.0),
+                "momentum_1m": features.get("momentum_1m", 0.0),
+                "momentum_5m": features.get("momentum_5m", 0.0),
+                "volatility_5m": features.get("volatility_5m", 0.0),
+            }
+
             async with httpx.AsyncClient(verify=False, timeout=10) as client:
+                # حفظ التوقع
                 await client.post(
                     f"{SB_URL}/rest/v1/btc_predictions",
                     headers={**SB_HEADERS, "Prefer": "return=minimal"},
                     json=payload,
                 )
+                # حفظ المؤشرات بنفس الوقت
+                if any(v != 0.0 for k, v in feat_payload.items() if k not in ("time", "price")):
+                    await client.post(
+                        f"{SB_URL}/rest/v1/btc_features",
+                        headers={**SB_HEADERS, "Prefer": "return=minimal"},
+                        json=feat_payload,
+                    )
+
         except Exception as e:
             logger.debug(f"Save prediction failed: {e}")
 
